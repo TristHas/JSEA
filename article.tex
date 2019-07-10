@@ -60,8 +60,8 @@ Our method, termed CPU offloading, works by transferring hidden activations to t
 computation, in order to free GPU memory for upstream layer computations during the forward pass. 
 These activations are then transferred back to the GPU as needed by the gradient computations of the backward pass.
 The key challenge to our method is to efficiently overlap data transfers and computations
-in order to minimize  wall time overhead induced by the additional data transfers.
-On a typical work station with a Nvidia Titan X GPU and XXX PCIe lanes, 
+in order to minimize  wall time overheads induced by the additional data transfers.
+On a typical work station with a Nvidia Titan X GPU, 
 we show that our method compares favorably to 
 gradient checkpointing as we are able reduce the memory consumption of training a VGG19 model by 35\% with a minimal additional wall time overhead of 21\%. 
 Further experiments detail the impact of the different optimization tricks we propose.
@@ -192,7 +192,7 @@ the stored activations as needed by the backpropagation algorithm.
 Follow-up work \cite{chen2016training} has since built on the original gradient 
 checkpointing algorithm to improve this memory/computation trade-off.  
 
-In contrast, our approach does not induce any additional computation:
+In contrast, our approach does not introduce any additional computation:
 Instead of computing a set of missing hidden activations during the backward pass,
 we propose to offload the hidden activations to the CPU during the forward pass,
 and to transfer these activations back to GPU memory during the backward pass.
@@ -243,7 +243,7 @@ For most layers, the computation of either gradients are functions of the layer'
 For example, convolution layers need the values of input activations to compute the weight gradients:
 
 \begin{equation}
-\frac{\delta \mathcal{L}}{\delta \theta_i} = z_{i-1} \star \frac{\delta \mathcal{L}}{\delta z_i} 
+\frac{\delta \mathcal{L}}{\delta \theta_i} = z_{i-1}^F \star \frac{\delta \mathcal{L}}{\delta z_i} 
 \end{equation}
 
 while Rectified Linear Unit layers need the input activations values 
@@ -260,12 +260,12 @@ Hence, backpropagation implementations in deep learning frameworks
 store hidden layers activations in GPU memory 
 upon computation during the forward pass. 
 Activations accumulate in live memory buffers throughout the full forward pass
-until used for gradients computations in the backward pass. 
-Once the gradients computed in the backward pass, 
+until used for gradients computations of the backward pass. 
+Once the gradients computed during the backward pass, 
 their associated hidden activation buffers can be freed from live memory. 
 However, the accumulation of activation values stored within each layer 
 along the forward pass creates a major bottleneck in GPU memory.
-In the next Section, we detail our approach to alleviate this memory bottleneck.
+In the next section, we detail our approach to alleviate this memory bottleneck.
 
 \section{Propose Method}
 \subsection{Framework}
@@ -332,11 +332,12 @@ $\mathcal{T}_{total} = \mathcal{T}_{comp} + \mathcal{T}_{idle}$, where $\mathcal
 \centering
 \includegraphics[width=0.8\textwidth]{Figure2.jpg}
 \caption{Illustration of the parallel CPU Offloading execution through time.
+(bottom): Without parallelism, computations and data transfers are sequentially executed within the same stream
+so that the overhead in wall time corresponds to the total time of data transfers $\mathcal{T}_{data}$.
 (top): Computations and data transfer are executed in parallel in their dedicated stream. 
 The overhead in wall time $\mathcal{T}_{idle}$ is spent as the computation stream awaits 
 for data transfers to complete (illustrated in red). 
-(bottom): Without parallelism, computations and data transfers are sequentially executed within the same stream
-so that the overhead in wall time corresponds to the total time of data transfers $\mathcal{T}_{data}$}.
+}
 \end{figure}
 
 
@@ -382,7 +383,8 @@ Skip connections induce a delay in the GPU buffer de-allocation as the input of 
 be kept in memory until the end of the residual block computation to be added to the output.
 In ResNet architectures, this delay is short enough to have little impact on the memory/wall time trade off.
 However, this means that our method is poorly suited to densely connected 
-networks such as DenseNet \cite{huang2017densely} or UNet \cite{ronneberger2015u}, which features very long skip connections.
+architectures such as DenseNet \cite{huang2017densely} or UNet \cite{ronneberger2015u} 
+as their long-range skip connections introduce large delays in the GPU buffer de-allocation.
 
 %() In the experiment section, we will show that this delay slightly degrades the memory consumption 
 %of CPU offloading for residual networks compared to sequential architectures like VGG.
@@ -390,9 +392,9 @@ networks such as DenseNet \cite{huang2017densely} or UNet \cite{ronneberger2015u
 
 During the backward pass, the input activation $z_{i-1}$ 
 of layer $i$ must be transferred back into GPU memory
-for the backward gradient computations to proceed.
+for the backward gradient computations $\delta f_i$ to proceed.
 Hence, we overlap the transfer of $z_{i-1}$ to GPU 
-with the backward computations of the upper layer $i+1$ to avoid GPU idle time.
+with the backward computations $\delta f_{i+1}$ of the upper layer $i+1$ to avoid GPU idle time.
 As formalized in Algorithm 2, we thus synchronize the data transfer of $z_{i-1}$ 
 with the beginning of the backpropagation through $f_{i+1}$.
 
@@ -420,8 +422,8 @@ with the beginning of the backpropagation through $f_{i+1}$.
 \end{algorithm}
 
 We use threading and locks to handle the parallelism and synchronization on the CPU side,
-and CUDA streams to handle the parallelization on the GPU end. 
-CUDA events provides synchronization primitives to precisdely track 
+and CUDA streams to handle the parallelization on the GPU device. 
+CUDA events provides synchronization primitives to precisely track 
 the completion of kernel executions.
 Algorithm 1 and 2 provide pseudo-code for the forward and backward pass respectively.
 
@@ -440,7 +442,7 @@ With the above parallelization scheme, the overhead $\mathcal{T}_{idle}$ in wall
 is given by the sum of the difference in the computation and data transfer time at each layer.
 If data transfer is faster than the computation in each layer, 
 CPU offloading will reduce memory consumption without any overhead in wall time.
-Hence, CPU offloading is best suited for computation intensive operations like convolution.
+Hence, CPU offloading is best suited for computation intensive operations like convolutions.
 In contrast, batch normalization layers come with negligible computational cost,
 but significant data transfer time so that offloading the input activations of 
 such layer comes with a significant overhead.
@@ -494,7 +496,7 @@ CPU $\rightarrow$ GPU (Pageable)	&  $4.1$          \\
 CPU $\rightarrow$ GPU (Pinned)	        &  $6.1$          \\
 \hline
 \end{tabular}
-\caption{Measurement of data transfer and pinned memory allocation speed on our workstations.
+\caption{Measurement of data transfer and pinned memory allocation speed on our workstation.
 Pinned memory buffers bring a substantial speed up in both directions of the data transfer.}
 \end{center}
 \end{table*}
@@ -591,7 +593,7 @@ in speed and have proven critical for performance.
 Compression of the hidden states to either sparse representations or lower precision
 encodings may bring similar speed-up and would be very interesting to investigate in future work. 	
 We expect that simply converting the hidden activations to FP16 before sending them
-to the host device should further reduce the data transfer by half.
+to the host device should further reduce the data transfer time by half.
 
 \subsection{Architecture comparison}
 
@@ -655,7 +657,7 @@ Searching for an optimal parallelization strategy given a fixed computational gr
 is a very interesting problem left open to investigate. 
 In this paper, we provide a proof of concept by showing that 
 even a rather naive parallelization strategies with minimum optimization
-leads to a memory/time trade-off competitive relative to 
+leads to a competitive memory/time trade-off relatively to 
 the well established method of gradient checkpointing.
 
 \section{Conclusion}
@@ -669,7 +671,7 @@ to alleviate the GPU bottleneck in training CNNs.
 Our experiment on a standard single-GPU work station shows a more
 effective memory/wall time trade-off than gradient checkpointing.
 Our approach is orthogonal to other resource optimization approaches 
-such as pruning, quantization so these approaches can easily be combined in future work.
+such as pruning and quantization so these approaches can easily be combined in future work.
 
 \bibliographystyle{unsrt}
 \bibliography{article}
